@@ -32,7 +32,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^6",
-    "electron": "^43",
+    "electron": "^43.8.3",
     "electron-builder": "^26",
     "electron-vite": "6.0.0-beta.1",
     "oxfmt": "0.61.0",
@@ -40,7 +40,7 @@
     "react": "^19",
     "react-dom": "^19",
     "typescript": "^7.0.2",
-    "vite": "^8",
+    "vite": "^8.3.5",
     "zustand": "^5"
   },
   "trustedDependencies": [
