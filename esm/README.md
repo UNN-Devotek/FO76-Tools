@@ -210,7 +210,7 @@ RUST_TEST_ESM_A=old.esm RUST_TEST_ESM_B=new.esm cargo test
 
 ## Index cache
 
-`Index`'s cache is five independent, zero-copy [rkyv](https://rkyv.org/) sections, each its own mmap'd file inside `esm_cache/` (one shared directory sibling to the ESM), read via `rkyv::access_unchecked` rather than deserialized into heap HashMaps. Two are eager, built together on `Database::open` whenever either is missing or stale:
+`Index`'s cache is five independent, zero-copy [rkyv](https://rkyv.org/) sections, each its own mmap'd file inside `esm_cache/` (one shared directory sibling to the ESM), validated with rkyv bytecheck on every mapping before zero-copy access, rather than deserialized into heap HashMaps. A forged or corrupt payload is rejected and rebuilt even when its header matches; validation no longer depends on `ESM_CACHE_VERIFY`. Two are eager, built together on `Database::open` whenever either is missing or stale:
 
 - **`.esm.forms`** (~200 MiB) — FormID→[`RecordMeta`] table plus the per-type FormID directory.
 - **`.esm.tree`** (~140 MiB) — the GRUP structural tree (`tree` / `list-groups`).

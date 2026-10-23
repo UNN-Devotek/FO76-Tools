@@ -11,6 +11,7 @@ asarUnpack:
   - "node_modules/@fo76/esm-napi/**"
 npmRebuild: false
 linux:
+  executableName: esm-viewer
   target: AppImage
 mac:
   target: dmg
