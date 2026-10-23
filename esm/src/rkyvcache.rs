@@ -7,11 +7,11 @@
 //! an rkyv archive whose root sits at the *end* of the payload (this is how
 //! rkyv lays out archives — see [`Section::get`]'s SAFETY comment). The
 //! header carries an identity stamp of the source ESM (size + mtime) plus
-//! enough versioning that a stale/foreign/corrupt file is rejected by O(1)
-//! header checks alone, so the steady-state read path can hand the mapped
-//! bytes straight to [`rkyv::access_unchecked`] with no per-open validation
-//! or full-file hashing — the entire point of moving off bincode's
-//! multi-second, gigabyte-scale deserialize.
+//! versioning to reject stale or foreign files. Every mapped payload also
+//! passes full bytecheck validation before its archived pointers can be used.
+//! The cache lives beside a user-selected ESM, so its public header cannot
+//! establish that this binary wrote it. Validated archives remain zero-copy:
+//! they are never deserialized into gigabyte-scale heap structures.
 //!
 //! # On-disk header layout
 //!
@@ -224,9 +224,8 @@ where
 {
     /// Open and validate `path` as a section of `kind` matching `sig`.
     ///
-    /// Performs ONLY the O(1) header checks (see the module-level layout
-    /// table and [`parse_header`]) plus, if the `ESM_CACHE_VERIFY` env var
-    /// is set to exactly `"1"`, a full checked [`rkyv::access`] pass. Never
+    /// Performs the O(1) header checks (see the module-level layout table
+    /// and [`parse_header`]) and a full checked [`rkyv::access`] pass. Never
     /// panics. Every rejection reason returns `Ok(Section::Absent)`, not an
     /// `Err` — a missing/corrupt cache is a routine "rebuild" condition, not
     /// a hard failure. Only genuine I/O errors (e.g. permission denied on
@@ -338,20 +337,13 @@ where
 
         let payload = HEADER_SIZE..mmap.len();
 
-        // 6. Optional full bytecheck pass, gated behind an env var so CI can
-        // prove the writer's output is sound (see the tests below, which
-        // already exercise this path directly) without paying the cost on
-        // the hot load-time path. Exact-match "1" only — not
-        // "true"/"yes"/etc., per the spec for this module.
-        if std::env::var("ESM_CACHE_VERIFY").as_deref() == Ok("1")
-            && let Err(e) = rkyv::access::<A, rkyv::rancor::Error>(&mmap[payload.clone()])
-        {
+        // 6. A matching public header is not proof of payload validity:
+        // caches can arrive beside an untrusted ESM. Validate every archive
+        // before Section::get exposes its pointers, regardless of environment.
+        if let Err(e) = rkyv::access::<A, rkyv::rancor::Error>(&mmap[payload.clone()]) {
             log::warn!(
-                "rkyvcache: {} failed full bytecheck validation under \
-                 ESM_CACHE_VERIFY=1 ({e}); treating as absent and \
-                 rebuilding. This should never happen — it means the \
-                 writer produced a section that fails its own format's \
-                 validation.",
+                "rkyvcache: {} failed full bytecheck validation ({e}); \
+                 treating as absent and rebuilding",
                 path.display(),
             );
             return Ok(Section::Absent);
@@ -374,56 +366,12 @@ where
         match self {
             Section::Absent => None,
             Section::Mapped { mmap, payload, .. } => {
-                // SAFETY: this is the only call to `access_unchecked` in the
-                // crate — keep it that way. Its preconditions were
-                // established by `Section::map`, above, and hold together as
-                // follows:
-                //
-                // 1. `magic`/`format_version`/`section_kind` were checked
-                //    (parse_header 4a-4c), so these bytes are one of *our*
-                //    files, written by *this* module's `write_section`, and
-                //    not some unrelated file that happens to occupy `path`.
-                // 2. `cache_version` and `layout_fingerprint` matched
-                //    (parse_header 4d-4e), so the bytes were produced by a
-                //    build whose `A` layout is bit-for-bit identical to this
-                //    build's `A` layout — the whole reason those two fields
-                //    exist is to make this equality checkable in O(1)
-                //    without deserializing anything.
-                // 3. `mmap.len()` equals `HEADER_SIZE + payload_len` EXACTLY
-                //    (map step 4h) and `payload_len >= size_of::<A>()` (map
-                //    step 4g), so `rkyv`'s `root_position` computation
-                //    (`payload_len.saturating_sub(size_of::<A>())`) lands
-                //    inside the payload rather than saturating to a wrong
-                //    position — this is the check that keeps the access
-                //    below in-bounds.
-                // 4. The payload start (`mmap.as_ptr() + HEADER_SIZE`) is
-                //    16-aligned (map step 5), matching what rkyv's
-                //    high-level serializer assumed when it laid the archive
-                //    out.
-                // 5. The ESM identity stamp (`src_size`/`src_mtime_secs`/
-                //    `src_mtime_nanos`) matched `sig` (parse_header 4f), so
-                //    this section was built from the exact ESM the caller is
-                //    asking about, not a stale one left over from a prior
-                //    game update.
-                //
-                // What this does NOT prove: that the bytes are not a
-                // hand-crafted byte-valid-looking file, or that no single bit
-                // got flipped after these header checks ran (e.g. by disk
-                // corruption between `map`'s checks and this `get` call —
-                // though in practice both happen within the same `mmap`, so
-                // there is no window for that specific case). This is
-                // accepted for the same reason `deny.toml` accepts
-                // RUSTSEC-2025-0141 for bincode in `index.rs`: this cache is
-                // written and read by the same binary on the same machine,
-                // and never crosses a trust boundary, carries network input,
-                // or accepts user-supplied bytes — quoting that rationale,
-                // "written and read by the same binary on the same machine,
-                // never crosses a trust boundary". A hostile file placed at
-                // `path` by something other than this module is exactly the
-                // kind of adversarial input the checks above (particularly
-                // 4g/4h's checked arithmetic) are hardened against rejecting
-                // safely; what's out of scope is a bit-perfect adversarial
-                // forgery, which is not this module's threat model.
+                // SAFETY: Section::map validates the full archived payload
+                // with rkyv::access, including relative pointers, lengths and
+                // string validity, before constructing Section::Mapped. Its
+                // header/layout/size/alignment checks also passed. This shared
+                // mapping stays read-only; our writer publishes replacements
+                // by atomic rename rather than modifying a mapped file.
                 Some(unsafe { rkyv::access_unchecked::<A>(&mmap[payload.clone()]) })
             }
         }
@@ -962,6 +910,32 @@ mod tests {
     }
 
     // ── 3. Adversarial matrix (mmap-based, through Section::map) ────────────
+
+    #[test]
+    fn adversarial_valid_header_invalid_archive_is_rebuilt() {
+        let path = test_path("adv_invalid_archive");
+        let len = min_payload_len();
+        let header = build_header(
+            TEST_KIND,
+            test_sig(),
+            TEST_CACHE_VERSION,
+            TEST_LAYOUT_FINGERPRINT,
+            len,
+        );
+        // All header checks pass, but the root contains invalid string/vector
+        // metadata. Never dereference it: rejecting the mapping must happen
+        // before Section::get can expose unchecked archived pointers.
+        let mut bytes = header.to_vec();
+        bytes.extend(vec![0xff; len as usize]);
+        fs::write(&path, &bytes).unwrap();
+
+        let section = map_dummy(&path, TEST_KIND, test_sig());
+        let _ = fs::remove_file(&path);
+        assert!(
+            !section.is_mapped(),
+            "an invalid archive must trigger rebuild"
+        );
+    }
 
     #[test]
     fn adversarial_bad_magic() {

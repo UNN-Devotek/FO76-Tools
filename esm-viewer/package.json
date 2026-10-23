@@ -1,6 +1,7 @@
 {
   "name": "@fo76/esm-viewer",
   "version": "0.1.0",
+  "packageManager": "bun@1.4.4",
   "description": "FO76 ESM Viewer — Fallout 76 ESM record browser",
   "license": "MIT",
   "productName": "FO76 ESM Viewer",
@@ -32,15 +33,15 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^6",
-    "electron": "^43",
+    "electron": "^43.8.3",
     "electron-builder": "^26",
     "electron-vite": "6.0.0-beta.1",
-    "oxfmt": "0.61.0",
+    "oxfmt": "0.67.0",
     "oxlint": "1.76.0",
     "react": "^19",
     "react-dom": "^19",
     "typescript": "^7.0.2",
-    "vite": "^8",
+    "vite": "^8.3.5",
     "zustand": "^5"
   },
   "trustedDependencies": [
